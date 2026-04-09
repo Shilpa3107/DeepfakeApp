@@ -6,6 +6,7 @@ const HISTORY_SIZE = 10;
 
 export function useDeepfakeDetection(localVideoRef, remoteVideoRef, isCallActive) {
   const [detectionStatus, setDetectionStatus] = useState(null);
+  const [audioStatus, setAudioStatus] = useState(null);
   const [predictionHistory, setPredictionHistory] = useState([]);
   const [majorityVerdict, setMajorityVerdict] = useState(null);
   const [isDetecting, setIsDetecting] = useState(false);
@@ -15,14 +16,13 @@ export function useDeepfakeDetection(localVideoRef, remoteVideoRef, isCallActive
   const intervalRef = useRef(null);
   const canvasRef = useRef(document.createElement("canvas"));
   const processingRef = useRef(false);
+  const audioProcessingRef = useRef(false);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
 
   const captureFrame = useCallback(() => {
-    const videoEl =
-      remoteVideoRef?.current?.videoWidth
-        ? remoteVideoRef.current
-        : localVideoRef?.current?.videoWidth
-        ? localVideoRef.current
-        : null;
+    // Only capture from the remote peer's video!
+    const videoEl = remoteVideoRef?.current;
     if (!videoEl || !videoEl.videoWidth) return null;
 
     const canvas = canvasRef.current;
@@ -84,15 +84,74 @@ export function useDeepfakeDetection(localVideoRef, remoteVideoRef, isCallActive
 
   // Start/stop detection loop
   useEffect(() => {
+    let audioAttachInterval;
+
     if (isCallActive) {
       setIsDetecting(true);
       intervalRef.current = setInterval(runDetection, CAPTURE_INTERVAL_MS);
+      
+      // Periodically check for the remote person's stream so we only analyze THEM
+      audioAttachInterval = setInterval(() => {
+        const remoteVideoEl = remoteVideoRef?.current;
+        if (remoteVideoEl && remoteVideoEl.srcObject && !mediaRecorderRef.current) {
+           try {
+               const audioStream = new MediaStream(remoteVideoEl.srcObject.getAudioTracks());
+               if (audioStream.getTracks().length > 0) {
+                   mediaRecorderRef.current = new MediaRecorder(audioStream, { mimeType: 'audio/webm' });
+                   mediaRecorderRef.current.ondataavailable = async (e) => {
+                       if (e.data.size > 0) {
+                           const reader = new FileReader();
+                           reader.readAsDataURL(e.data);
+                           reader.onloadend = async () => {
+                               if (audioProcessingRef.current) return;
+                               audioProcessingRef.current = true;
+                               const base64Audio = reader.result;
+                               try {
+                                   const res = await fetch(`${FASTAPI_URL}/predict-audio`, {
+                                       method: "POST",
+                                       headers: { "Content-Type": "application/json" },
+                                       body: JSON.stringify({ audio: base64Audio }),
+                                       signal: AbortSignal.timeout(4000),
+                                   });
+                                   if (res.ok) {
+                                       const data = await res.json();
+                                       setAudioStatus(data);
+                                       console.log("Audio prediction:", data);
+                                       if (data.prediction === "fake" && data.confidence > 0.6) {
+                                           setAlertData({ ...data, type: "audio" });
+                                           setShowAlert(true);
+                                       }
+                                   }
+                               } catch (err) {}
+                               finally { audioProcessingRef.current = false; }
+                           };
+                       }
+                   };
+                   mediaRecorderRef.current.start(2000); // 2 seconds chunks
+                   clearInterval(audioAttachInterval);
+               }
+           } catch(e) { console.error("Audio recorder error:", e); }
+        }
+      }, 1000);
+
     } else {
       setIsDetecting(false);
       clearInterval(intervalRef.current);
+      clearInterval(audioAttachInterval);
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+          mediaRecorderRef.current.stop();
+      }
+      mediaRecorderRef.current = null;
     }
-    return () => clearInterval(intervalRef.current);
-  }, [isCallActive, runDetection]);
+
+    return () => {
+      clearInterval(intervalRef.current);
+      clearInterval(audioAttachInterval);
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+          mediaRecorderRef.current.stop();
+      }
+    };
+  }, [isCallActive, runDetection, remoteVideoRef]);
 
   const dismissAlert = useCallback(() => setShowAlert(false), []);
   const resetHistory = useCallback(() => {
@@ -104,6 +163,7 @@ export function useDeepfakeDetection(localVideoRef, remoteVideoRef, isCallActive
 
   return {
     detectionStatus,
+    audioStatus,
     predictionHistory,
     majorityVerdict,
     isDetecting,

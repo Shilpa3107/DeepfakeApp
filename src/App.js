@@ -37,21 +37,48 @@ function DeepfakeAlert({ data, onContinue, onEnd }) {
   );
 }
 
-function DetectionBadge({ status, majorityVerdict, isDetecting }) {
+function DetectionBadge({ status, audioStatus, majorityVerdict, isDetecting }) {
   if (!isDetecting) return null;
 
   const verdict = majorityVerdict?.verdict ?? status?.prediction ?? "…";
   const conf = status ? Math.round(status.confidence * 100) : null;
+
+  if (verdict === "…") {
+    return (
+      <div className="detection-badge badge-real" style={{ opacity: 0.7 }}>
+        <span className="badge-dot" style={{ background: "grey", boxShadow: "none" }} />
+        <span className="badge-label" style={{ color: "#aaa" }}>Waiting for feed...</span>
+        <span className="badge-sub">Detection Active</span>
+      </div>
+    );
+  }
+
   const isFake = verdict === "fake";
 
   return (
-    <div className={`detection-badge ${isFake ? "badge-fake" : "badge-real"}`}>
-      <span className="badge-dot" />
-      <span className="badge-label">
-        {isFake ? "⚠ FAKE" : "✓ REAL"}
-        {conf !== null && <em> {conf}%</em>}
-      </span>
-      <span className="badge-sub">Detection Active</span>
+    <div className={`detection-badge ${isFake ? "badge-fake" : "badge-real"}`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', padding: '12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
+        <span className="badge-dot" />
+        <span className="badge-label">
+          {isFake ? "⚠ OVERALL: FAKE" : "✓ OVERALL: REAL"}
+          {conf !== null && <em> {conf}%</em>}
+        </span>
+      </div>
+      
+      {status?.reason && (
+        <div style={{ fontSize: '11.5px', color: '#fff', opacity: 0.95, marginBottom: '6px', lineHeight: 1.3, textAlign: 'left' }}>
+          <strong>📹 Video Reason:</strong> {status.reason}
+        </div>
+      )}
+      
+      {audioStatus?.reason && (
+        <div style={{ fontSize: '11.5px', color: '#fff', opacity: 0.95, lineHeight: 1.3, textAlign: 'left' }}>
+          <strong>🎙️ Audio Reason:</strong> {audioStatus.reason} 
+          <em> (Conf: {Math.round(audioStatus.confidence * 100)}%)</em>
+        </div>
+      )}
+      
+      <span className="badge-sub" style={{ marginTop: '10px' }}>Tracking active across {audioStatus ? 'Audio & Video' : 'Video'} streams</span>
     </div>
   );
 }
@@ -170,6 +197,7 @@ export default function App() {
 
   const {
     detectionStatus,
+    audioStatus,
     predictionHistory,
     majorityVerdict,
     isDetecting,
@@ -308,6 +336,24 @@ export default function App() {
         <span className="header-logo">🛡️ DeepGuard</span>
         <div className="header-room">
           Room: <strong>{roomId}</strong>
+          <button 
+            onClick={() => {
+              navigator.clipboard.writeText(roomId);
+              alert("Room ID copied to clipboard!");
+            }} 
+            style={{ 
+              marginLeft: '10px', 
+              padding: '4px 8px', 
+              cursor: 'pointer', 
+              fontSize: '12px',
+              borderRadius: '4px',
+              border: 'none',
+              background: '#4CAF50',
+              color: 'white'
+            }}
+          >
+            📋 Copy ID
+          </button>
           <span className={`peer-dot ${peerCount > 0 ? "peer-on" : ""}`} />
           <span className="peer-label">
             {peerCount > 0 ? `${peerCount} peer` : "Waiting…"}
@@ -330,6 +376,13 @@ export default function App() {
             className="video-el"
           />
           <span className="panel-label">Remote</span>
+          <DetectionBadge
+            status={detectionStatus}
+            audioStatus={audioStatus}
+            majorityVerdict={majorityVerdict}
+            isDetecting={isDetecting}
+          />
+          <PredictionHistory history={predictionHistory} />
           <MajorityVerdict data={majorityVerdict} />
         </div>
 
@@ -344,12 +397,6 @@ export default function App() {
             className="video-el"
           />
           <span className="panel-label">You</span>
-          <DetectionBadge
-            status={detectionStatus}
-            majorityVerdict={majorityVerdict}
-            isDetecting={isDetecting}
-          />
-          <PredictionHistory history={predictionHistory} />
         </div>
       </main>
 

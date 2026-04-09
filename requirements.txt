@@ -5,3 +5,6 @@ torch
 torchvision
 opencv-python
 numpy
+librosa
+matplotlib
+soundfile

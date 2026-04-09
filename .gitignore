@@ -1,1 +1,5 @@
 node_modules
+__pycache__/
+*.pyc
+temp.png
+feedback.json

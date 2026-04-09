@@ -18,6 +18,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+import librosa
+import librosa.display
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
 # Optional deepfake inference dependencies
 USE_DEEPFAKE_MODEL = False
 try:
@@ -44,6 +50,8 @@ FACE_CONF_THRESHOLD = 0.5
 deepfake_model = None
 face_net = None
 preprocess = None
+audio_model = None
+audio_transform = None
 DEVICE = torch.device("cuda" if torch and torch.cuda.is_available() else "cpu") if USE_DEEPFAKE_MODEL else None
 
 app = FastAPI(title="Deepfake Detection API", version="1.0.0")
@@ -65,6 +73,11 @@ FEEDBACK_FILE = Path("feedback.json")
 
 class PredictRequest(BaseModel):
     frame: str          # base64-encoded JPEG/PNG data-URL
+    room_id: Optional[str] = None
+    user_id: Optional[str] = None
+
+class PredictAudioRequest(BaseModel):
+    audio: str          # base64-encoded audio chunk
     room_id: Optional[str] = None
     user_id: Optional[str] = None
 
@@ -93,7 +106,7 @@ class FeedbackResponse(BaseModel):
 # ── Mock model (replace with real inference) ──────────────────────────────────
 
 def load_deepfake_model() -> None:
-    global deepfake_model, face_net, preprocess
+    global deepfake_model, face_net, preprocess, audio_model, audio_transform
 
     if not USE_DEEPFAKE_MODEL:
         print("[deepfake] Torch/OpenCV dependencies are not installed. Using mock inference.")
@@ -106,8 +119,10 @@ def load_deepfake_model() -> None:
     try:
         try:
             model = models.resnet18(weights=None)
+            am = models.resnet18(weights=None)
         except TypeError:
             model = models.resnet18(pretrained=False)
+            am = models.resnet18(pretrained=False)
 
         model.fc = nn.Linear(model.fc.in_features, 2)
         state = torch.load(str(MODEL_WEIGHTS), map_location=DEVICE)
@@ -121,11 +136,25 @@ def load_deepfake_model() -> None:
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         ])
-        print("[deepfake] Model and face detector loaded successfully.")
+        
+        am.fc = nn.Linear(am.fc.in_features, 2)
+        AUDIO_WEIGHTS = MODEL_DIR / "audio_model.pth"
+        if AUDIO_WEIGHTS.exists():
+            am.load_state_dict(torch.load(str(AUDIO_WEIGHTS), map_location=DEVICE))
+            audio_model = am.to(DEVICE).eval()
+        audio_transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ])
+        
+        print("[deepfake] Models and face detector loaded successfully.")
     except Exception as exc:
         print("[deepfake] Failed to load model:", exc)
         deepfake_model = None
         face_net = None
+        audio_model = None
 
 load_deepfake_model()
 
@@ -227,6 +256,70 @@ def predict_deepfake(image_bytes: bytes) -> dict:
 @app.get("/health")
 async def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+
+def predict_audio(audio_bytes: bytes) -> dict:
+    if USE_DEEPFAKE_MODEL and audio_model is not None:
+        try:
+            import io
+            import soundfile as sf
+            y, sr = librosa.load(io.BytesIO(audio_bytes), sr=22050)
+        except Exception as e:
+            return {"prediction": "real", "confidence": 0.3, "reason": f"Audio decode error: {e}"}
+            
+        if len(y) == 0:
+            return {"prediction": "real", "confidence": 0.3, "reason": "Empty audio"}
+            
+        y = y[:22050*2]
+        spec = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=128, fmax=8000)
+        spec_db = librosa.power_to_db(spec, ref=np.max)
+        
+        plt.figure(figsize=(3,3))
+        librosa.display.specshow(spec_db, sr=sr)
+        plt.axis('off')
+        
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0)
+        plt.close()
+        buf.seek(0)
+        
+        img_array = np.frombuffer(buf.read(), np.uint8)
+        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        if img is None:
+            return {"prediction": "real", "confidence": 0.3, "reason": "Failed to generate spectrogram image"}
+            
+        tensor = audio_transform(img).unsqueeze(0).to(DEVICE)
+        with torch.no_grad():
+            logits = audio_model(tensor)
+            probs = torch.softmax(logits, dim=1)[0]
+            
+        fake_prob = float(probs[0].item())
+        real_prob = float(probs[1].item())
+        prediction = "fake" if fake_prob > 0.6 else "real"
+        confidence = float(max(fake_prob, real_prob))
+        return {
+            "prediction": prediction,
+            "confidence": confidence,
+            "reason": f"Audio anomaly prob: {fake_prob:.3f}" if prediction=="fake" else f"Audio natural prob: {real_prob:.3f}"
+        }
+    return {"prediction": "real", "confidence": 0.3, "reason": "Mock audio prediction"}
+
+@app.post("/predict-audio", response_model=PredictResponse)
+async def predict_audio_rt(req: PredictAudioRequest):
+    start = time.perf_counter()
+    try:
+        header, encoded = req.audio.split(",", 1) if "," in req.audio else ("", req.audio)
+        audio_bytes = base64.b64decode(encoded)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid audio data: {e}")
+        
+    result = predict_audio(audio_bytes)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    return PredictResponse(
+        prediction=result["prediction"],
+        confidence=result["confidence"],
+        reason=result["reason"],
+        processing_time_ms=round(elapsed_ms, 2),
+    )
 
 
 @app.post("/predict", response_model=PredictResponse)
