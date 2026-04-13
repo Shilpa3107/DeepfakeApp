@@ -4,8 +4,9 @@ import { useWebRTC } from "./hooks/useWebRTC";
 import { useDeepfakeDetection } from "./hooks/useDeepfakeDetection";
 import "./App.css";
 
-const SIGNAL_URL = process.env.REACT_APP_SIGNAL_URL || "http://localhost:3001";
-const FASTAPI_URL = process.env.REACT_APP_FASTAPI_URL || "http://localhost:8000";
+const HOSTNAME = typeof window !== "undefined" ? window.location.hostname : "localhost";
+const SIGNAL_URL = process.env.REACT_APP_SIGNAL_URL || `http://${HOSTNAME}:3001`;
+const FASTAPI_URL = process.env.REACT_APP_FASTAPI_URL || `http://${HOSTNAME}:8000`;
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
@@ -172,7 +173,13 @@ export default function App() {
 
   // Init socket
   useEffect(() => {
-    const s = io(SIGNAL_URL, { transports: ["websocket", "polling"] });
+    const s = io(SIGNAL_URL, { transports: ["polling", "websocket"] });
+    s.on("connect", () => {
+      console.log("Socket connected:", s.id);
+    });
+    s.on("connect_error", (err) => {
+      console.warn("Socket connect error:", err);
+    });
     s.on("room-joined", ({ roomId: r, peers }) => {
       setPeerCount(peers.length);
     });
@@ -219,11 +226,14 @@ export default function App() {
     const id = inputRoom.trim() || Math.random().toString(36).slice(2, 8).toUpperCase();
     setRoomId(id);
     setRoomFull(false);
+    setScreen("call");
     try {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
       await startLocalStream();
       socket.emit("join-room", { roomId: id, userId: socket.id });
-      setScreen("call");
-    } catch (_) {}
+    } catch (_) {
+      setScreen("lobby");
+    }
   }, [inputRoom, socket, startLocalStream]);
 
   const handleEndCall = useCallback(() => {
