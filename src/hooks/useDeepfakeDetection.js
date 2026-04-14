@@ -23,7 +23,17 @@ export function useDeepfakeDetection(localVideoRef, remoteVideoRef, isCallActive
   const captureFrame = useCallback(() => {
     // Only capture from the remote peer's video!
     const videoEl = remoteVideoRef?.current;
-    if (!videoEl || !videoEl.videoWidth) return null;
+    if (!videoEl) {
+      console.warn("Deepfake detection: remote video element not available");
+      return null;
+    }
+    if (!videoEl.videoWidth || !videoEl.videoHeight) {
+      console.warn(
+        "Deepfake detection: remote video not ready",
+        { readyState: videoEl.readyState, srcObject: videoEl.srcObject }
+      );
+      return null;
+    }
 
     const canvas = canvasRef.current;
     canvas.width = 320;
@@ -51,8 +61,11 @@ export function useDeepfakeDetection(localVideoRef, remoteVideoRef, isCallActive
         signal: AbortSignal.timeout(4000),
       });
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
       const data = await res.json();
+      console.log("Deepfake frame response:", data);
 
       setDetectionStatus(data);
 
@@ -76,7 +89,7 @@ export function useDeepfakeDetection(localVideoRef, remoteVideoRef, isCallActive
         return next;
       });
     } catch (err) {
-      // Silently ignore individual frame failures
+      console.error("Deepfake detection error:", err);
     } finally {
       processingRef.current = false;
     }
