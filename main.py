@@ -264,7 +264,7 @@ def predict_audio(audio_bytes: bytes) -> dict:
             import soundfile as sf
             y, sr = librosa.load(io.BytesIO(audio_bytes), sr=22050)
         except Exception as e:
-            return {"prediction": "real", "confidence": 0.3, "reason": f"Audio decode error: {e}"}
+            return {"prediction": "real", "confidence": 0.5, "reason": "Audio format unsupported; skipping audio check"}
             
         if len(y) == 0:
             return {"prediction": "real", "confidence": 0.3, "reason": "Empty audio"}
@@ -336,7 +336,12 @@ async def predict(req: PredictRequest):
     if len(image_bytes) < 100:
         raise HTTPException(status_code=400, detail="Frame too small")
 
-    result = predict_deepfake(image_bytes)
+    try:
+        result = predict_deepfake(image_bytes)
+    except Exception as e:
+        print(f"Error in predict_deepfake: {e}")
+        result = {"prediction": "real", "confidence": 0.0, "reason": f"Frame error: {e}"}
+
     elapsed_ms = (time.perf_counter() - start) * 1000
 
     return PredictResponse(

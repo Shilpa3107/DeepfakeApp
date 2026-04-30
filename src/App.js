@@ -231,7 +231,8 @@ export default function App() {
       await new Promise((resolve) => requestAnimationFrame(resolve));
       await startLocalStream();
       socket.emit("join-room", { roomId: id, userId: socket.id });
-    } catch (_) {
+    } catch (err) {
+      alert("Could not access camera/mic: " + (err.message || "Please check browser permissions or secure context."));
       setScreen("lobby");
     }
   }, [inputRoom, socket, startLocalStream]);
