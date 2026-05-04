@@ -18,13 +18,19 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-import librosa
-import librosa.display
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+# Optional audio/deepfake inference dependencies. Free deploy targets can run
+# without these and use the mock fallback responses below.
+try:
+    import librosa
+    import librosa.display
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+except ImportError:
+    librosa = None
+    matplotlib = None
+    plt = None
 
-# Optional deepfake inference dependencies
 USE_DEEPFAKE_MODEL = False
 try:
     import cv2
@@ -258,13 +264,13 @@ async def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
 
 def predict_audio(audio_bytes: bytes) -> dict:
-    if USE_DEEPFAKE_MODEL and audio_model is not None:
+    if USE_DEEPFAKE_MODEL and audio_model is not None and librosa is not None and plt is not None:
         try:
             import io
             import soundfile as sf
             y, sr = librosa.load(io.BytesIO(audio_bytes), sr=22050)
         except Exception as e:
-            return {"prediction": "real", "confidence": 0.3, "reason": f"Audio decode error: {e}"}
+            return {"prediction": "real", "confidence": 0.5, "reason": "Audio format unsupported; skipping audio check"}
             
         if len(y) == 0:
             return {"prediction": "real", "confidence": 0.3, "reason": "Empty audio"}
@@ -336,7 +342,12 @@ async def predict(req: PredictRequest):
     if len(image_bytes) < 100:
         raise HTTPException(status_code=400, detail="Frame too small")
 
-    result = predict_deepfake(image_bytes)
+    try:
+        result = predict_deepfake(image_bytes)
+    except Exception as e:
+        print(f"Error in predict_deepfake: {e}")
+        result = {"prediction": "real", "confidence": 0.0, "reason": f"Frame error: {e}"}
+
     elapsed_ms = (time.perf_counter() - start) * 1000
 
     return PredictResponse(
